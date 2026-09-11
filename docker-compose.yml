@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-resale_tracker}
+      POSTGRES_USER: ${POSTGRES_USER:-resale_tracker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-resale_tracker}
+    ports:
+      - "5432:5432"
+    volumes:
+      - resale_tracker_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-resale_tracker}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  resale_tracker_pgdata:
