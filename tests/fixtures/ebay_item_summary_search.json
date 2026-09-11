@@ -1,0 +1,53 @@
+{
+  "href": "https://api.ebay.com/buy/browse/v1/item_summary/search?q=rick+owens&limit=50",
+  "total": 5,
+  "itemSummaries": [
+    {
+      "itemId": "v1|110001|0",
+      "title": "Rick Owens Geobasket High Top Sneakers Black Size 42",
+      "price": {"value": "650.00", "currency": "USD"},
+      "itemWebUrl": "https://www.ebay.com/itm/110001",
+      "condition": "Pre-owned",
+      "localizedAspects": [
+        {"type": "STRING", "name": "Brand", "value": "Rick Owens"},
+        {"type": "STRING", "name": "Size", "value": "42"}
+      ],
+      "seller": {"username": "seller1", "feedbackPercentage": "99.5"},
+      "thumbnailImages": [{"imageUrl": "https://example.com/1-thumb.jpg"}],
+      "additionalImages": [
+        {"imageUrl": "https://example.com/1-a.jpg"},
+        {"imageUrl": "https://example.com/1-b.jpg"}
+      ]
+    },
+    {
+      "itemId": "v1|110002|0",
+      "title": "Maison Margiela MM6 Tabi Ballet Flats EU 38",
+      "price": {"value": "320.00", "currency": "USD"},
+      "itemWebUrl": "https://www.ebay.com/itm/110002",
+      "condition": "New with box",
+      "localizedAspects": [],
+      "seller": {"username": "seller2", "feedbackPercentage": "98.2"},
+      "thumbnailImages": [{"imageUrl": "https://example.com/2-thumb.jpg"}]
+    },
+    {
+      "itemId": "v1|110003|0",
+      "title": "Dior Homme Hedi Slimane 19cm Skinny Jeans",
+      "price": {"value": "280.00", "currency": "USD"},
+      "itemWebUrl": "https://www.ebay.com/itm/110003",
+      "condition": "Pre-owned"
+    },
+    {
+      "itemId": "v1|110004|0",
+      "title": "Saint Laurent Wyatt Boots (missing price on purpose)",
+      "itemWebUrl": "https://www.ebay.com/itm/110004"
+    },
+    {
+      "itemId": "v1|110005|0",
+      "title": "Carol Christian Poell CCP Object Dyed Sneaker Size 43",
+      "price": {"value": "410.00", "currency": "USD"},
+      "itemWebUrl": "https://www.ebay.com/itm/110005",
+      "condition": "Pre-owned",
+      "seller": {"username": "seller3", "feedbackPercentage": "N/A"}
+    }
+  ]
+}

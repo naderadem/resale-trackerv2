@@ -1,12 +1,14 @@
 """eBay Browse API adapter.
 
 Implements the OAuth2 client-credentials flow and search against eBay's
-Browse API (item_summary/search). Mapping the raw JSON response onto
-Listing objects is left for you to implement -- see `parse_listings` below.
+Browse API (item_summary/search), and maps the raw JSON response onto
+Listing objects in `parse_listings`.
 """
 import json
 import os
+import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -18,6 +20,60 @@ from sources.base import Listing, ListingSource
 EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 EBAY_BROWSE_SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 EBAY_OAUTH_SCOPE = "https://api.ebay.com/oauth/api_scope"
+
+# Brands we care about, used only as a last-resort regex fallback against
+# the title when eBay doesn't give us a structured brand aspect. Order
+# matters: longer/more specific names are checked before things they
+# contain (e.g. "Maison Margiela" before "MM6").
+KNOWN_BRANDS = [
+    "Maison Margiela",
+    "MM6",
+    "Rick Owens DRKSHDW",
+    "Rick Owens",
+    "Carol Christian Poell",
+    "Dior Homme",
+    "Yves Saint Laurent",
+    "Saint Laurent",
+    "Celine",
+]
+
+# Tried in order; the first capturing group is taken as the size string.
+# Deliberately conservative -- these are meant to catch common resale-title
+# conventions ("Size 42", "EU 42", "US 9.5", "sz M"), not every possible
+# way a seller might write a size.
+SIZE_PATTERNS = [
+    re.compile(r"\bsize[:\s]+([a-z0-9./]{1,6})\b", re.IGNORECASE),
+    re.compile(r"\bsz[:\s]+([a-z0-9./]{1,6})\b", re.IGNORECASE),
+    re.compile(r"\b(?:eu|eur)[:\s]?(\d{2}(?:\.\d)?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:us|uk)[:\s]?(\d{1,2}(?:\.\d)?)\b", re.IGNORECASE),
+]
+
+
+def _get_aspect(item: dict, name: str) -> Optional[str]:
+    """Look up `name` in an item's localizedAspects list, case-insensitively."""
+    for aspect in item.get("localizedAspects") or []:
+        if str(aspect.get("name", "")).strip().lower() == name.lower():
+            value = aspect.get("value")
+            return str(value).strip() if value not in (None, "") else None
+    return None
+
+
+def _guess_brand_from_title(title: str) -> Optional[str]:
+    """Last-resort brand guess by matching known brand names against the title."""
+    lowered = title.lower()
+    for brand in KNOWN_BRANDS:
+        if brand.lower() in lowered:
+            return brand
+    return None
+
+
+def _guess_size_from_title(title: str) -> Optional[str]:
+    """Last-resort size guess via regex against the title."""
+    for pattern in SIZE_PATTERNS:
+        match = pattern.search(title)
+        if match:
+            return match.group(1)
+    return None
 
 
 class EbayAuthError(Exception):
@@ -141,34 +197,77 @@ class EbaySource(ListingSource):
         """Map a raw Browse API search response onto a list of Listing objects.
 
         `raw_response` is the parsed JSON body of a call to
-        GET /buy/browse/v1/item_summary/search -- look at the sample printed
-        by `search()` above to see its actual shape, or the eBay docs:
+        GET /buy/browse/v1/item_summary/search -- see the eBay docs:
         https://developer.ebay.com/api-docs/buy/browse/resources/item_summary/methods/search
 
-        Implement this by:
-          - reading raw_response.get("itemSummaries", []) (a list of item dicts)
-          - for each item, building a Listing(...) with:
-              source="ebay"
-              external_id = item["itemId"]
-              title = item["title"]
-              brand = look in item.get("localizedAspects", []) for an aspect
-                  named "Brand" (Browse API search results don't always
-                  include this -- fall back to None if it's missing)
-              price = float(item["price"]["value"])
-              currency = item["price"]["currency"]
-              size = same idea as brand, via localizedAspects, may be None
-              condition = item.get("condition")
-              seller_rating = item.get("seller", {}).get("feedbackPercentage"),
-                  cast to float, or None
-              photo_count = len(item.get("thumbnailImages", [])) plus any
-                  images under item.get("additionalImages", []), or None
-              url = item["itemWebUrl"]
-              fetched_at = datetime.now(timezone.utc)
-          - returning the list of Listings
+        Brand and size are pulled from `localizedAspects` first (eBay
+        sometimes includes these for fashion categories), then a top-level
+        field of the same name if present, and only as a last resort by
+        regexing the title against a list of known brands/size patterns.
+        Fields are left as None rather than guessed when none of those find
+        anything -- a wrong guess is worse than a missing value here, since
+        it would quietly corrupt matching and pricing downstream.
 
-        Raises NotImplementedError until you write the above yourself.
+        Items missing a required field (id/title/price/url) are skipped
+        rather than raising, so one malformed item doesn't drop an entire
+        batch of otherwise-good results.
         """
-        raise NotImplementedError(
-            "parse_listings is not implemented yet -- see the docstring above "
-            "and the sample raw listing printed by search()."
-        )
+        items = raw_response.get("itemSummaries") or []
+        fetched_at = datetime.now(timezone.utc)
+        listings: list[Listing] = []
+
+        for item in items:
+            try:
+                external_id = item["itemId"]
+                title = item["title"]
+                price = float(item["price"]["value"])
+                currency = item["price"]["currency"]
+                url = item["itemWebUrl"]
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            brand = (
+                _get_aspect(item, "Brand")
+                or item.get("brand")
+                or _guess_brand_from_title(title)
+            )
+            size = (
+                _get_aspect(item, "Size")
+                or _get_aspect(item, "US Shoe Size")
+                or item.get("size")
+                or _guess_size_from_title(title)
+            )
+            condition = item.get("condition")
+
+            seller = item.get("seller") or {}
+            seller_rating_raw = seller.get("feedbackPercentage")
+            try:
+                seller_rating = (
+                    float(seller_rating_raw) if seller_rating_raw not in (None, "") else None
+                )
+            except (TypeError, ValueError):
+                seller_rating = None
+
+            thumbnail_images = item.get("thumbnailImages") or []
+            additional_images = item.get("additionalImages") or []
+            total_images = len(thumbnail_images) + len(additional_images)
+            photo_count = total_images if total_images > 0 else None
+
+            listings.append(
+                Listing(
+                    source="ebay",
+                    external_id=external_id,
+                    title=title,
+                    brand=brand,
+                    price=price,
+                    currency=currency,
+                    size=size,
+                    condition=condition,
+                    seller_rating=seller_rating,
+                    photo_count=photo_count,
+                    url=url,
+                    fetched_at=fetched_at,
+                )
+            )
+
+        return listings
