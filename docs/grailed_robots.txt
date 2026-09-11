@@ -1,0 +1,47 @@
+# Fetched from https://www.grailed.com/robots.txt on 2026-09-11.
+# Saved for reference before deciding whether/how to implement sources/grailed.py.
+
+#    _____  _____             _____  _       ______  _____
+#   / ____||  __ \     /\    |_   _|| |     |  ____||  __ \
+#  | |  __ | |__) |   /  \     | |  | |     | |__   | |  | |
+#  | | |_ ||  _  /   / /\ \    | |  | |     |  __|  | |  | |
+#  | |__| || | \ \  / ____ \  _| |_ | |____ | |____ | |__| |
+#   \_____||_|  \_\/_/    \_\|_____||______||______||_____/
+#
+#  Hello Robot,
+#
+#  Very nice to e-meet you. We've been waiting for you. There are some cookies
+#  next to the sitemap, if you're hungry of course.
+#
+#  With love,
+#  Grailed
+#
+User-Agent: *
+Disallow: /drycleanonly/*/preview
+Disallow: /drycleanonly/*/edit
+Disallow: /404
+Disallow: /api/listings/*/related_capsules
+Disallow: /api/session_id
+Disallow: /connect/paypal
+Disallow: /conversations
+Disallow: /curators
+Disallow: /internal/
+Disallow: /listings/*/edit
+Disallow: /listings/*/similar
+Disallow: /messages
+Disallow: /messages/archived
+Disallow: /mygrails/*
+Disallow: /my-feed
+Disallow: /paypal-cancel
+Disallow: /paypal-success
+Disallow: /checkout/
+Disallow: /checkout-success
+Disallow: /random_listings/
+Disallow: /search
+Disallow: /sell/
+Disallow: /sold
+Disallow: /ssr/
+Disallow: /users/*
+Disallow: /*/feedback
+
+Sitemap: https://sitemap.grailed.com/sitemap.xml.gz
