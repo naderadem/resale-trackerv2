@@ -199,3 +199,19 @@ the code changes (as opposed to README, which documents how to use it).
   on an actual GitHub Actions runner** -- no way to trigger one from this
   environment; push this and watch the Actions tab the first time to
   confirm the service container step and health-wait behave as expected.
+- **Seed data expanded 15 -> 43 items** (`seed_data.py`): Rick Owens 12
+  (added Dunk Low, Cyclops, Megatooth, Stooges Leather Jacket, Performa
+  Tee, plus DRKSHDW Duke Jean/Geobasket/Ramones alongside the existing
+  Detroit Jean), Dior Homme 8, Saint Laurent 8, Margiela 12 (4 each across
+  Mainline/MM6/Replica), Carol Christian Poell 3.
+- **Found and fixed a real matcher bug while expanding Rick Owens**:
+  DRKSHDW and mainline share model names (Geobasket, Ramones) the same way
+  Margiela's lines do, and before this fix the matcher had no narrowing
+  for it -- a title explicitly saying "Rick Owens DRKSHDW Geobasket"
+  matched the *mainline* item instead, because both candidates scored a
+  perfect 1.00 and `process.extractOne` broke the tie by list order, not
+  by what the title said. Added a `_rick_owens_line_hint` guard mirroring
+  the Margiela one (narrows to DRKSHDW when that word appears, else
+  mainline, whenever "Rick Owens" is named at all). Verified directly
+  (printed match results before/after) and covered with 3 new tests in
+  `TestRickOwensLineDisambiguation`.

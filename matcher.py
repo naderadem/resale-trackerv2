@@ -1,7 +1,7 @@
 """Fuzzy-matches a listing title against canonical_items using rapidfuzz.
 
-Plain fuzzy scoring alone isn't safe for this catalog because of two
-brand-specific ambiguities, both handled with keyword-regex guards *before*
+Plain fuzzy scoring alone isn't safe for this catalog because of three
+brand-specific ambiguities, all handled with keyword-regex guards *before*
 any fuzzy scoring happens:
 
   Margiela lines: Mainline, MM6, and Replica are distinct canonical items
@@ -12,6 +12,14 @@ any fuzzy scoring happens:
   fuzzy-matching it to *some* canonical item (most likely the genuine
   product it claims to imitate) would quietly launder a counterfeit's
   price into that item's median.
+
+  Rick Owens mainline vs. DRKSHDW: the same problem as Margiela's lines,
+  smaller in scope -- DRKSHDW shares model names with mainline (Geobasket,
+  Ramones), so a title naming only the shared model scores a perfect
+  fuzzy match against *both* lines' candidates. Without narrowing first,
+  the tie is broken arbitrarily by list order rather than by what the
+  title says, so a title that explicitly says "DRKSHDW" could silently
+  match the (usually pricier) mainline item instead.
 
   Hedi Slimane-era houses: Dior Homme, Saint Laurent, and Celine are
   distinct canonical items that can have superficially similar model names
@@ -38,6 +46,9 @@ REPLICA_WORD_RE = re.compile(r"\breplica\b", re.IGNORECASE)
 COUNTERFEIT_WORD_RE = re.compile(
     r"\b(reps?|fake|aaa\+?|1:1|dhgate|unauthentic|not\s*authentic|knockoff)\b", re.IGNORECASE
 )
+
+RICK_OWENS_BRAND_RE = re.compile(r"\brick\s*owens\b", re.IGNORECASE)
+DRKSHDW_RE = re.compile(r"\bdrkshdw\b", re.IGNORECASE)
 
 DIOR_HOMME_RE = re.compile(r"\bdior\s*homme\b|\bdior\b", re.IGNORECASE)
 SAINT_LAURENT_RE = re.compile(
@@ -69,6 +80,10 @@ def _is_margiela(item) -> bool:
     return "margiela" in (item.brand or "").lower()
 
 
+def _is_rick_owens(item) -> bool:
+    return (item.brand or "").strip().lower() == "rick owens"
+
+
 def _searchable_text(item) -> str:
     return " ".join(filter(None, [item.brand, item.line_or_era, item.model_name]))
 
@@ -87,6 +102,18 @@ def _margiela_line_hint(title: str) -> Optional[str]:
     if REPLICA_WORD_RE.search(title):
         return "Replica"
     return "Mainline"
+
+
+def _rick_owens_line_hint(title: str) -> Optional[str]:
+    """Guess whether a Rick Owens title means mainline or DRKSHDW.
+
+    Returns None if the title has no "Rick Owens" token at all -- same
+    reasoning as the Margiela hint: no signal means no narrowing, not "it
+    must be mainline".
+    """
+    if not RICK_OWENS_BRAND_RE.search(title):
+        return None
+    return "DRKSHDW" if DRKSHDW_RE.search(title) else "Mainline"
 
 
 def _bare_replica_mention(title: str) -> bool:
@@ -135,6 +162,13 @@ def match_listing(
             for c in candidates
             if _is_margiela(c) and (c.line_or_era or "").strip().lower() == margiela_hint.lower()
         ]
+        if narrowed:
+            candidates = narrowed
+
+    rick_owens_hint = _rick_owens_line_hint(title)
+    if rick_owens_hint is not None:
+        target_line = "DRKSHDW" if rick_owens_hint == "DRKSHDW" else None
+        narrowed = [c for c in candidates if _is_rick_owens(c) and c.line_or_era == target_line]
         if narrowed:
             candidates = narrowed
 

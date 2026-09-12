@@ -57,6 +57,32 @@ class TestMargielaLineDisambiguation:
         assert result.reason == "counterfeit_keyword_mention"
 
 
+class TestRickOwensLineDisambiguation:
+    """DRKSHDW shares model names with mainline (Geobasket, Ramones), which
+    creates the same tie-breaking problem as Margiela's lines: without
+    narrowing first, a title naming only the shared model scores a
+    perfect fuzzy match against both lines' candidates.
+    """
+
+    def test_drkshdw_title_matches_drkshdw_not_mainline(self, canonical_items):
+        result = match_listing("Rick Owens DRKSHDW Geobasket Black Size 42", canonical_items)
+        assert result.canonical_item is not None
+        assert result.canonical_item.line_or_era == "DRKSHDW"
+        assert result.canonical_item.model_name == "Geobasket"
+
+    def test_mainline_title_matches_mainline_not_drkshdw(self, canonical_items):
+        result = match_listing("Rick Owens Geobasket Black Size 42", canonical_items)
+        assert result.canonical_item is not None
+        assert result.canonical_item.line_or_era is None
+        assert result.canonical_item.model_name == "Geobasket"
+
+    def test_drkshdw_ramones_does_not_match_mainline_ramones(self, canonical_items):
+        result = match_listing("Rick Owens DRKSHDW Ramones size 43", canonical_items)
+        assert result.canonical_item is not None
+        assert result.canonical_item.line_or_era == "DRKSHDW"
+        assert result.canonical_item.model_name == "Ramones"
+
+
 class TestHediEraHouseSeparation:
     def test_dior_homme_title_does_not_match_saint_laurent_item(self, canonical_items):
         result = match_listing("Dior Homme Hedi Slimane 19cm Skinny Jeans size 30", canonical_items)
