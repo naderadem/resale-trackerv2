@@ -4,8 +4,10 @@ Subcommands:
     seed                 populate canonical_items with seed data (idempotent)
     ingest <query>        search eBay and upsert results into listings
     match                 match unprocessed listings against canonical_items
+    rematch               clear all matches/unmatched rows and match everything again
     prices                show price stats + flagged listings per canonical item
     unmatched              list listings the matcher couldn't confidently place
+    db-check               print row counts for every table
 
 Run `python main.py <subcommand> --help` for per-command options.
 """
@@ -17,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 import config
+from db.models import CanonicalItem, ListingMatch, ListingRecord, UnmatchedListing
 from db.repository import (
     get_canonical_items,
     get_matched_listings_for_canonical_item,
@@ -81,22 +84,32 @@ def cmd_ingest(args) -> None:
     print(f"Ingested {len(listings)} listing(s) for query {args.query!r}.")
 
 
-def cmd_match(args) -> None:
-    session = _get_session_or_exit()
-    canonical_items = get_canonical_items(session)
-    if not canonical_items:
-        print("No canonical items yet -- run `python main.py seed` first.")
-        sys.exit(1)
-
-    listings = get_unprocessed_listings(session)
-    if not listings:
-        print("No unprocessed listings to match. Run `python main.py ingest <query>` first.")
-        return
-
+def _run_matching(session, listings, canonical_items, threshold, dry_run):
+    """Shared core of `match` and `rematch`. In dry-run mode, nothing is
+    written -- each listing's match (or lack of one) is just printed.
+    """
     matched_count = 0
     unmatched_count = 0
     for listing in listings:
-        result = match_listing(listing.title, canonical_items, threshold=args.threshold)
+        result = match_listing(listing.title, canonical_items, threshold=threshold)
+
+        if dry_run:
+            if result.canonical_item is not None:
+                print(
+                    f"  MATCH    conf={result.confidence:.2f}  {listing.title!r}\n"
+                    f"           -> {_item_label(result.canonical_item)}"
+                )
+                matched_count += 1
+            else:
+                near_miss = (
+                    f" (closest: {_item_label(result.best_candidate)}, conf={result.confidence:.2f})"
+                    if result.best_candidate
+                    else ""
+                )
+                print(f"  NO MATCH reason={result.reason} {listing.title!r}{near_miss}")
+                unmatched_count += 1
+            continue
+
         if result.canonical_item is not None:
             record_match(
                 session, listing.id, result.canonical_item.id, result.confidence, result.method
@@ -115,7 +128,48 @@ def cmd_match(args) -> None:
             )
             unmatched_count += 1
 
-    print(f"Matched {matched_count}, unmatched {unmatched_count} (of {len(listings)} processed).")
+    return matched_count, unmatched_count
+
+
+def cmd_match(args) -> None:
+    session = _get_session_or_exit()
+    canonical_items = get_canonical_items(session)
+    if not canonical_items:
+        print("No canonical items yet -- run `python main.py seed` first.")
+        sys.exit(1)
+
+    listings = get_unprocessed_listings(session)
+    if not listings:
+        print("No unprocessed listings to match. Run `python main.py ingest <query>` first.")
+        return
+
+    if args.dry_run:
+        print(f"Dry run against {len(listings)} unprocessed listing(s) -- nothing will be written.")
+    matched, unmatched = _run_matching(session, listings, canonical_items, args.threshold, args.dry_run)
+
+    verb = "Would match" if args.dry_run else "Matched"
+    print(f"{verb} {matched}, unmatched {unmatched} (of {len(listings)} processed).")
+
+
+def cmd_rematch(args) -> None:
+    session = _get_session_or_exit()
+    canonical_items = get_canonical_items(session)
+    if not canonical_items:
+        print("No canonical items yet -- run `python main.py seed` first.")
+        sys.exit(1)
+
+    deleted_matches = session.query(ListingMatch).delete()
+    deleted_unmatched = session.query(UnmatchedListing).delete()
+    session.commit()
+    print(f"Cleared {deleted_matches} match(es) and {deleted_unmatched} unmatched row(s).")
+
+    listings = session.query(ListingRecord).order_by(ListingRecord.id).all()
+    if not listings:
+        print("No listings in the database to match.")
+        return
+
+    matched, unmatched = _run_matching(session, listings, canonical_items, args.threshold, dry_run=False)
+    print(f"Rematched {len(listings)} listing(s): {matched} matched, {unmatched} unmatched.")
 
 
 def cmd_prices(args) -> None:
@@ -173,6 +227,19 @@ def cmd_unmatched(args) -> None:
         )
 
 
+def cmd_db_check(args) -> None:
+    session = _get_session_or_exit()
+    counts = [
+        ("listings", session.query(ListingRecord).count()),
+        ("canonical_items", session.query(CanonicalItem).count()),
+        ("listing_matches", session.query(ListingMatch).count()),
+        ("unmatched_listings", session.query(UnmatchedListing).count()),
+    ]
+    width = max(len(name) for name, _ in counts)
+    for name, count in counts:
+        print(f"{name:<{width}}  {count}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="resale-tracker CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -186,7 +253,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_match = sub.add_parser("match", help="Match unprocessed listings against canonical_items")
     p_match.add_argument("--threshold", type=float, default=config.MATCH_THRESHOLD)
+    p_match.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print what would match to what, without writing to the database",
+    )
     p_match.set_defaults(func=cmd_match)
+
+    p_rematch = sub.add_parser(
+        "rematch",
+        help="Clear listing_matches/unmatched_listings and match every listing again",
+    )
+    p_rematch.add_argument("--threshold", type=float, default=config.MATCH_THRESHOLD)
+    p_rematch.set_defaults(func=cmd_rematch)
 
     p_prices = sub.add_parser(
         "prices", help="Show price stats and flagged listings per canonical item"
@@ -212,6 +292,9 @@ def build_parser() -> argparse.ArgumentParser:
         "unmatched", help="List listings the matcher couldn't confidently place"
     )
     p_unmatched.set_defaults(func=cmd_unmatched)
+
+    p_db_check = sub.add_parser("db-check", help="Print row counts for every table")
+    p_db_check.set_defaults(func=cmd_db_check)
 
     return parser
 

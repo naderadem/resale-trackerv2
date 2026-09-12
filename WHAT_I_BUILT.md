@@ -118,3 +118,51 @@ the code changes (as opposed to README, which documents how to use it).
   real `ingest` round trip (which also needs a real Postgres) are the one
   piece not exercised here; run `docker compose up -d && alembic upgrade
   head` yourself and try `ingest`/`match`/`prices` for real.
+
+## Verification and tuning pass
+
+- **Confirmed** (no fix needed): `db/repository.py:upsert_listing` already
+  used `sqlalchemy.dialects.postgresql.insert(...).on_conflict_do_update(...)`,
+  not a generic insert. `.venv/` was confirmed gitignored and never
+  committed (`git log --all -- .venv` returns nothing).
+- **`tests/test_db_integration.py`**: the specific gap from the last pass --
+  runs the real `search() -> parse_listings() -> upsert_listing()` pipeline
+  against the same mocked eBay fixture twice, against a real Postgres, and
+  asserts the row count for those listings is unchanged after the second
+  round and `fetched_at` moved forward. Skips cleanly (`pytest.skip`, not a
+  failure) when Postgres isn't reachable -- still true in the environment
+  this was written in, so it has run to completion nowhere yet. Run
+  `docker compose up -d --wait && alembic upgrade head && pytest` locally
+  to actually exercise it; if it fails, that's a real bug, not a false
+  negative from being skipped.
+- **`db-check` subcommand**: prints row counts for all four tables, so you
+  can sanity-check ingest/match state without opening `psql`.
+- **Reliability of `docker compose up` -> `alembic upgrade head`**: the
+  Postgres service already had a healthcheck (`pg_isready`, 5s interval, 10
+  retries) from the persistence-layer commit. Added to it:
+  - `alembic/env.py` now retries its initial connection (10 attempts, 1.5s
+    apart, ~15s total) before raising, so a migration run immediately after
+    `docker compose up -d` doesn't fail outright on a container that's
+    started but not yet accepting connections. Verified by pointing it at
+    a closed port and confirming it logs 9 retries before raising the real
+    connection error on the 10th.
+  - README now recommends `docker compose up -d --wait` (blocks until the
+    healthcheck passes) as the primary path, with the retry loop as a
+    backstop for the plain `&&` version.
+- **Matcher tuning support**:
+  - `--threshold` on `match` already read its default from
+    `config.MATCH_THRESHOLD` (itself `.env`-configurable) -- this was
+    already in place from the CLI-wiring commit, not new.
+  - **`match --dry-run`**: prints each listing's would-be match (or its
+    reason for not matching, plus the closest candidate considered) without
+    calling `record_match`/`record_unmatched`. Verified directly against an
+    in-memory DB that dry-run leaves `listing_matches`/`unmatched_listings`
+    at zero rows while reporting the same match/unmatched counts a real run
+    would.
+  - **`rematch`**: clears `listing_matches` and `unmatched_listings`
+    entirely (not just unprocessed listings) and re-matches every row in
+    `listings`, so editing `seed_data.py` or sweeping a threshold can be
+    tested against already-ingested data instead of re-hitting eBay.
+    Verified the clear-then-redo sequence against an in-memory DB.
+  - `matcher.MatchResult.best_candidate` (added in the CLI-wiring commit)
+    is what makes dry-run's "closest candidate" output possible.

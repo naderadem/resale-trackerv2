@@ -5,7 +5,7 @@ priced below their historical median. Focused on Rick Owens, Maison
 Margiela, Carol Christian Poell, and Hedi Slimane-era Dior Homme and Saint
 Laurent.
 
-## Status: Stage 2
+## Status: Stage 2 (+ verification/tuning pass)
 
 Stage 1 built the source-adapter interface and the eBay adapter (auth +
 search, with `parse_listings` left as an exercise). Stage 2 adds:
@@ -26,15 +26,15 @@ search, with `parse_listings` left as an exercise). Stage 2 adds:
 - **Pricing** ([pricing.py](pricing.py)): median/p25 with a minimum sample
   size, and a suspicious-listing flag (this tier is heavily counterfeited,
   so an unusually low price defaults to a red flag, not a deal).
-- **CLI subcommands** in `main.py`: `seed`, `ingest`, `match`, `prices`,
-  `unmatched`.
-- **Tests** ([tests/](tests/)): pytest, no network.
+- **CLI subcommands** in `main.py`: `seed`, `ingest`, `match` (with
+  `--dry-run`), `rematch`, `prices`, `unmatched`, `db-check`.
+- **Tests** ([tests/](tests/)): pytest, no network required, plus one
+  integration test against a real Postgres that skips cleanly if none is
+  reachable.
 
 Still no web framework or scheduling -- this is a CLI you run by hand.
 See [WHAT_I_BUILT.md](WHAT_I_BUILT.md) for the detailed, stage-by-stage log
-of what's actually implemented (including caveats -- e.g. the migration
-hasn't been run against a live Postgres in the environment this was built
-in).
+of what's actually implemented.
 
 Grailed is still just a stub -- see
 [docs/grailed_robots.txt](docs/grailed_robots.txt) (notably:
@@ -53,10 +53,17 @@ cp .env.example .env
 # then edit .env and fill in EBAY_APP_ID / EBAY_CERT_ID
 # (the Postgres defaults in .env.example already match docker-compose.yml)
 
-docker compose up -d                    # starts local Postgres
-alembic upgrade head                    # creates the tables
-python main.py seed                     # populates canonical_items
+docker compose up -d --wait              # starts local Postgres, waits for the healthcheck
+alembic upgrade head                     # creates the tables
+python main.py seed                      # populates canonical_items
 ```
+
+`--wait` (Docker Compose v2.17+) blocks until the `postgres` service reports
+healthy before returning, so the `alembic upgrade head` right after it isn't
+racing container startup. `alembic upgrade head` also retries its own
+initial connection for ~15s on top of that, so plain `docker compose up -d
+&& alembic upgrade head` (no `--wait`) works too -- it just risks a few
+retry-log lines while Postgres finishes starting.
 
 ### Getting eBay credentials
 
@@ -79,6 +86,7 @@ python main.py ingest "rick owens geobasket"        # search eBay, upsert into l
 python main.py match                                # match new listings against canonical_items
 python main.py prices                               # print stats + flagged listings
 python main.py unmatched                            # review what the matcher couldn't place
+python main.py db-check                             # row counts per table, no psql needed
 ```
 
 `ingest` prints one sample raw listing as JSON on its way through (same as
@@ -95,6 +103,24 @@ python main.py match --threshold 0.8
 python main.py prices --min-sample-size 3 --floor-pct 0.35
 ```
 
+### Tuning the matcher
+
+```bash
+python main.py match --dry-run                      # see what would match, write nothing
+python main.py match --dry-run --threshold 0.6       # sweep a threshold without touching the db
+python main.py rematch --threshold 0.68              # re-match EVERY listing from scratch
+```
+
+`match --dry-run` prints each listing's would-be match (or its reason for
+not matching, plus the closest candidate it considered) without writing
+anything -- use it to sweep thresholds or check the effect of an edited
+`seed_data.py` before committing to it.
+
+`rematch` clears `listing_matches` and `unmatched_listings` entirely and
+re-matches every listing in `listings` from scratch. Use it after editing
+`seed_data.py` or changing the threshold, so you can iterate against
+listings you've already ingested instead of re-hitting the eBay API.
+
 Responses are cached on disk under `.cache/` (gitignored) for 15 minutes by
 default, and requests are throttled by a shared rate limiter, so re-running
 the same `ingest` query repeatedly won't hammer eBay.
@@ -106,5 +132,10 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-No network calls and no database required -- eBay responses are mocked, and
-the matcher/pricing tests run against in-memory objects.
+No network calls required -- eBay responses are mocked, and the
+matcher/pricing tests run against in-memory objects. One test
+(`tests/test_db_integration.py`) needs a real Postgres to actually run
+(via `docker compose up -d && alembic upgrade head`) and skips cleanly
+otherwise -- it's the only thing that verifies the upsert's `INSERT ...
+ON CONFLICT` against a real database rather than mocked/in-memory
+substitutes.
