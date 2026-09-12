@@ -215,3 +215,51 @@ the code changes (as opposed to README, which documents how to use it).
   mainline, whenever "Rick Owens" is named at all). Verified directly
   (printed match results before/after) and covered with 3 new tests in
   `TestRickOwensLineDisambiguation`.
+
+## Fixture corpus + matcher eval harness
+
+- **`labeled_titles.py`**: 67 hand-labeled realistic listing titles (44
+  expected to match a specific canonical item, 23 expected to match
+  nothing) across Rick Owens (mainline + DRKSHDW), Margiela (all three
+  lines), Hedi-era Dior Homme/Saint Laurent, and CCP. Includes
+  misspellings ("Rick Owns", "Margiella", "Poel", a misspelled "Repica"),
+  the MM6-vs-"Maison Margiela" wording variants, bare-"replica"
+  counterfeit-ambiguity cases, wrong-designer noise (Off-White, Balenciaga,
+  a bare "Dior" cologne mention, CDG, Undercover, Yohji), plain unrelated
+  listings (Nike, Levi's, Adidas...), and Celine -- a real Hedi-era house
+  that is deliberately *not* on the seeded catalog, to check it doesn't
+  fall back onto a similarly-worded Dior Homme/Saint Laurent item.
+- **`eval_matcher.py`** + `python main.py matcher-eval` (`--sweep` for a
+  threshold range): precision/recall/F1 over the corpus, treating "should
+  match a specific item" as the positive class, plus a `confused` list for
+  cases where the matcher matched the *wrong* real item (worse than no
+  match, since it corrupts pricing data). Fully offline -- builds the
+  catalog straight from `seed_data.py`, no database.
+- **Ran it honestly and found a real bug, not a threshold problem**: at
+  the production default (0.72), the first run scored P=0.967 R=0.674
+  F1=0.795, with 14 false negatives -- and 13 of those 14 had the
+  *correct* item as the closest candidate, just short of the bar. Dug into
+  why: `_searchable_text` included `line_or_era` in the *scored* string,
+  and multi-word era labels like "Hedi Slimane Era" are essentially never
+  typed by a real seller, so every Dior Homme/Saint Laurent candidate
+  carried 2-3 tokens no title would ever contain -- `token_set_ratio`
+  penalizes candidate-side-only tokens (unlike title-side-only ones, which
+  is the entire reason it was chosen over `WRatio` last time), so this
+  systematically depressed that whole category's scores for zero
+  disambiguation benefit (narrowing already handles disambiguation via the
+  brand/line hints, before scoring ever runs). Fixed by dropping
+  `line_or_era` from the scored text entirely -- confirmed line-by-line
+  that this doesn't weaken narrowing anywhere, then verified no
+  regressions (one existing test needed fixing: it asserted a Celine
+  title cleared the *production* default threshold when what it was
+  actually testing was disambiguation from Dior Homme/Saint Laurent, a
+  separate concern -- see its updated comment).
+  **After the fix, still at threshold 0.72, no threshold change**:
+  P=0.943 R=0.786 F1=0.857 (FN 14 -> 9). Remaining false negatives and
+  the 2 confused cases are reported to the user categorized (threshold
+  problem vs. catalog gap vs. genuinely-not-tracked), not just as raw
+  numbers. Full sweep (0.50-0.95, step 0.05) is in the CLI output; F1
+  peaks at threshold 0.60 (0.952) on this corpus and falls off sharply
+  above 0.70, which is real evidence about the current default, not a
+  recommendation acted on here -- changing the production threshold is a
+  call for the user to make, not something this pass changed unilaterally.

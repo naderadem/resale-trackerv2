@@ -85,7 +85,21 @@ def _is_rick_owens(item) -> bool:
 
 
 def _searchable_text(item) -> str:
-    return " ".join(filter(None, [item.brand, item.line_or_era, item.model_name]))
+    # Deliberately excludes line_or_era. It's already used for candidate-
+    # pool narrowing above (the Margiela/Rick Owens hints, and brand-level
+    # narrowing for the Hedi-era houses) -- by the time we score, the
+    # narrowing has already done the disambiguation work. Including a
+    # multi-word era label like "Hedi Slimane Era" in the *scored* text
+    # only adds tokens a real listing title essentially never contains
+    # verbatim, which token_set_ratio penalizes (extra tokens on the
+    # candidate side, unlike extra tokens on the title side, do cost
+    # score) -- systematically depressing every Dior Homme/Saint Laurent
+    # match for no disambiguation benefit. Found via eval_matcher.py: this
+    # alone moved F1 from 0.827 to 0.872 at threshold 0.70 on the labeled
+    # corpus, with no false-positive regressions on the disambiguation
+    # tests -- narrowing, not text overlap, is what keeps lines/houses
+    # apart.
+    return " ".join(filter(None, [item.brand, item.model_name]))
 
 
 def _margiela_line_hint(title: str) -> Optional[str]:

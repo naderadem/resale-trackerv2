@@ -8,6 +8,7 @@ Subcommands:
     prices                show price stats + flagged listings per canonical item
     unmatched              list listings the matcher couldn't confidently place
     db-check               print row counts for every table
+    matcher-eval            evaluate the matcher against a hand-labeled corpus (offline, no db)
 
 Run `python main.py <subcommand> --help` for per-command options.
 """
@@ -19,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 import config
+import eval_matcher
 from db.models import CanonicalItem, ListingMatch, ListingRecord, UnmatchedListing
 from db.repository import (
     get_canonical_items,
@@ -240,6 +242,48 @@ def cmd_db_check(args) -> None:
         print(f"{name:<{width}}  {count}")
 
 
+def _print_eval_result(result: eval_matcher.EvalResult) -> None:
+    print(f"threshold={result.threshold}  n={result.total}")
+    print(
+        f"  precision={result.precision:.3f}  recall={result.recall:.3f}  f1={result.f1:.3f}"
+    )
+    print(
+        f"  TP={result.true_positives}  FP={result.false_positives}  "
+        f"FN={result.false_negatives}  TN={result.true_negatives}"
+    )
+    if result.confused:
+        print(f"  confused ({len(result.confused)}):")
+        for title, expected, actual in result.confused:
+            print(f"    {title!r}")
+            print(f"      expected: {expected}")
+            print(f"      got:      {actual}")
+
+
+def cmd_matcher_eval(args) -> None:
+    # Offline by design -- an in-memory catalog built straight from
+    # seed_data.py, no database needed. This is meant to be run cheaply
+    # and often while tuning, not only against whatever happens to be
+    # seeded in a real database.
+    canonical_items = [
+        CanonicalItem(brand=brand, line_or_era=line, model_name=model, notes=notes)
+        for brand, line, model, notes in CANONICAL_ITEMS
+    ]
+
+    if args.sweep:
+        thresholds = eval_matcher.frange(args.sweep_start, args.sweep_end, args.sweep_step)
+        results = eval_matcher.sweep(canonical_items, thresholds)
+        print(f"{'threshold':>9}  {'P':>6}  {'R':>6}  {'F1':>6}  {'TP':>4}  {'FP':>4}  {'FN':>4}  {'TN':>4}")
+        for r in results:
+            print(
+                f"{r.threshold:>9.2f}  {r.precision:>6.3f}  {r.recall:>6.3f}  {r.f1:>6.3f}  "
+                f"{r.true_positives:>4}  {r.false_positives:>4}  {r.false_negatives:>4}  {r.true_negatives:>4}"
+            )
+        return
+
+    result = eval_matcher.evaluate(canonical_items, args.threshold)
+    _print_eval_result(result)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="resale-tracker CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -295,6 +339,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_db_check = sub.add_parser("db-check", help="Print row counts for every table")
     p_db_check.set_defaults(func=cmd_db_check)
+
+    p_eval = sub.add_parser(
+        "matcher-eval",
+        help="Evaluate the matcher against labeled_titles.py (offline, no db needed)",
+    )
+    p_eval.add_argument("--threshold", type=float, default=config.MATCH_THRESHOLD)
+    p_eval.add_argument(
+        "--sweep", action="store_true", help="Report precision/recall/F1 across a threshold range"
+    )
+    p_eval.add_argument("--sweep-start", type=float, default=0.5, dest="sweep_start")
+    p_eval.add_argument("--sweep-end", type=float, default=0.95, dest="sweep_end")
+    p_eval.add_argument("--sweep-step", type=float, default=0.05, dest="sweep_step")
+    p_eval.set_defaults(func=cmd_matcher_eval)
 
     return parser
 
