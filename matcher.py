@@ -62,6 +62,26 @@ HOUSE_PATTERNS = {
     "Celine": CELINE_RE,
 }
 
+# Brand abbreviations sellers commonly use in place of the full name.
+# These already work fine for candidate-pool narrowing (SAINT_LAURENT_RE
+# above matches "ysl"/"slp" directly), but an abbreviation has essentially
+# zero character overlap with the full name in the *fuzzy-scored* text --
+# "CCP drip point boot" scores as if "Carol Christian Poell" weren't
+# mentioned at all. Expanded only in the string handed to the scorer, not
+# used anywhere upstream (the hint regexes already recognize these where
+# it matters for narrowing).
+_ABBREVIATION_EXPANSIONS = [
+    (re.compile(r"\bccp\b", re.IGNORECASE), "Carol Christian Poell"),
+    (re.compile(r"\bysl\b", re.IGNORECASE), "Saint Laurent"),
+    (re.compile(r"\bslp\b", re.IGNORECASE), "Saint Laurent"),
+]
+
+
+def _expand_abbreviations_for_scoring(title: str) -> str:
+    for pattern, replacement in _ABBREVIATION_EXPANSIONS:
+        title = pattern.sub(replacement, title)
+    return title
+
 
 @dataclass
 class MatchResult:
@@ -204,7 +224,8 @@ def match_listing(
     # canonical string doesn't have, and token_set_ratio is far more
     # forgiving of extra words in one side than WRatio is.
     choices = [_searchable_text(c) for c in candidates]
-    best = process.extractOne(title, choices, scorer=fuzz.token_set_ratio)
+    scoring_title = _expand_abbreviations_for_scoring(title)
+    best = process.extractOne(scoring_title, choices, scorer=fuzz.token_set_ratio)
     if best is None:
         return MatchResult(None, 0.0, "rapidfuzz", reason="no_candidates")
 

@@ -125,6 +125,28 @@ class TestHediEraHouseSeparation:
         assert result.method in ("rapidfuzz", "blocked")
 
 
+class TestBrandAbbreviationExpansion:
+    """An abbreviation has ~zero character overlap with the full brand
+    name in the scored text, so without expansion these would score as
+    if the brand weren't mentioned at all.
+    """
+
+    def test_ccp_abbreviation_matches_carol_christian_poell(self, canonical_items):
+        result = match_listing("CCP drip point ankle boot size 42", canonical_items)
+        assert result.canonical_item is not None
+        assert result.canonical_item.brand == "Carol Christian Poell"
+
+    def test_ysl_abbreviation_matches_saint_laurent(self, canonical_items):
+        result = match_listing("YSL skinny leather pants size 30", canonical_items)
+        assert result.canonical_item is not None
+        assert result.canonical_item.brand == "Saint Laurent"
+
+    def test_slp_abbreviation_matches_saint_laurent(self, canonical_items):
+        result = match_listing("SLP classic perfecto leather jacket size 48", canonical_items)
+        assert result.canonical_item is not None
+        assert result.canonical_item.brand == "Saint Laurent"
+
+
 class TestGeneralMatching:
     def test_clear_match_returns_high_confidence(self, canonical_items):
         result = match_listing("Rick Owens Geobasket High Top Black Size 42", canonical_items)

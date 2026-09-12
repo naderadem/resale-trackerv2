@@ -297,3 +297,44 @@ the code changes (as opposed to README, which documents how to use it).
   simulated second `alert` run against the same listing correctly sees it
   as already-alerted -- the actual scenario the "never alerts twice"
   requirement is about.
+
+## Follow-up matcher tuning (unprompted, driven by the eval harness)
+
+Re-ran `matcher-eval` after the alerting work and kept iterating on real
+findings, same discipline as before -- fix identified defects, never touch
+the threshold to move the number:
+
+- **Bug in the previous fix**: dropping `line_or_era` from scored text
+  entirely (to stop "Hedi Slimane Era" hurting Dior Homme/SLP scores) was
+  too broad -- it also stripped "MM6"/"Replica"/"DRKSHDW", which sellers
+  genuinely do type, turning several MM6 titles into new false negatives.
+  Fixed by only excluding line labels that are pure internal
+  categorization and never appear in a real title (`_NON_VERBAL_LINE_LABELS
+  = {"Mainline", "Hedi Slimane Era"}`), keeping everything else. F1 at
+  threshold 0.72: 0.857 -> 0.900 (FN 9 -> 6), no regressions.
+- **Abbreviation expansion**: "CCP", "YSL", "SLP" have ~zero character
+  overlap with "Carol Christian Poell" / "Saint Laurent" in the scored
+  text, even though the hint regexes already recognize them fine for
+  candidate narrowing. Added `_expand_abbreviations_for_scoring`, applied
+  only to the string handed to the fuzzy scorer. F1: 0.900 -> 0.940
+  (FN 6 -> 3), no new false positives. 3 new tests in
+  `TestBrandAbbreviationExpansion`.
+- **Tried and rejected**: expanding bare "Margiela" -> "Maison Margiela"
+  and bare "MM6" -> "Maison Margiela MM6" the same way. In isolation this
+  pushed F1 to 0.952 (FN 6 -> 1) -- looked like a clean win on the
+  aggregate number -- but it converted one false negative into a new
+  *wrong-match* case ("Margiela mainline painted denim jeans" started
+  matching Tabi Boot instead of Painted Denim). A wrong match is worse
+  than no match (it corrupts pricing data with a different item's
+  history), so a higher F1 built on trading a "we said nothing" failure
+  for a "we said something false" failure is not actually an improvement
+  -- rejected, not merged, despite the better headline number. Documented
+  here rather than silently discarded, per the instruction to report
+  numbers honestly rather than chase them.
+- **Final state, threshold unchanged at 0.72**: P=0.951 R=0.929 F1=0.940,
+  TP=39 FP=2 FN=3. The 3 remaining false negatives ("RICK OWENS Cyclops
+  low top sneaker sz 44" at 0.545, "MM6 Japanese sneaker size 39 black" at
+  0.686, "Margiela mainline painted denim jeans size 32" at 0.649) and the
+  2 confused cases (a misspelled "Repica"; "Wyatt suede boot" vs. "Wyatt
+  Boot") are left as genuine threshold-boundary/near-duplicate-naming
+  cases rather than chased further.
