@@ -5,36 +5,49 @@ priced below their historical median. Focused on Rick Owens, Maison
 Margiela, Carol Christian Poell, and Hedi Slimane-era Dior Homme and Saint
 Laurent.
 
-## Status: Stage 2 (+ verification/tuning pass)
+## Status
 
-Stage 1 built the source-adapter interface and the eBay adapter (auth +
-search, with `parse_listings` left as an exercise). Stage 2 adds:
+Stage 1 built the source-adapter interface and the eBay adapter. Since
+then: `parse_listings` was implemented, Postgres persistence + Alembic
+migrations were added, a rapidfuzz matcher with brand/line disambiguation,
+a pricing module with a suspicious-listing flag, EU/US/UK/JP size
+normalization, a hand-labeled evaluation corpus for the matcher, Discord
+alerting with dedup, and CI. Full detail, including honest before/after
+numbers from the matcher eval pass, is in
+[WHAT_I_BUILT.md](WHAT_I_BUILT.md) -- this section is just the map:
 
-- **`parse_listings` implemented** ([sources/ebay.py](sources/ebay.py)):
-  brand/size resolved from `localizedAspects` -> a top-level field -> a
-  regex fallback against the title, left `None` if none of those find
-  anything.
-- **Postgres persistence** ([db/](db/)): `listings` (upserted on
-  `source, external_id`), `canonical_items`, `listing_matches`,
-  `unmatched_listings`. Migrations via Alembic
-  ([alembic/](alembic/)); a local Postgres via `docker-compose.yml`.
-- **A matcher** ([matcher.py](matcher.py)): rapidfuzz-based, with explicit
-  handling for Margiela's Mainline/MM6/Replica ambiguity and Hedi-era house
-  separation (Dior Homme / Saint Laurent / Celine) -- see its module
-  docstring.
-- **Seed data** ([seed_data.py](seed_data.py)): 15 canonical items.
-- **Pricing** ([pricing.py](pricing.py)): median/p25 with a minimum sample
-  size, and a suspicious-listing flag (this tier is heavily counterfeited,
-  so an unusually low price defaults to a red flag, not a deal).
-- **CLI subcommands** in `main.py`: `seed`, `ingest`, `match` (with
-  `--dry-run`), `rematch`, `prices`, `unmatched`, `db-check`.
-- **Tests** ([tests/](tests/)): pytest, no network required, plus one
-  integration test against a real Postgres that skips cleanly if none is
-  reachable.
+- **`sources/ebay.py`**: OAuth + Browse API search;`parse_listings` maps
+  brand/size via `localizedAspects` -> a top-level field -> a title regex,
+  `None` if none of those find anything.
+- **`db/`**: SQLAlchemy models (`listings`, `canonical_items`,
+  `listing_matches`, `unmatched_listings`, `sent_alerts`), upserted on
+  `source, external_id`. Migrations via Alembic (`alembic/`); local
+  Postgres via `docker-compose.yml`.
+- **`matcher.py`**: rapidfuzz-based, with keyword-regex guards before
+  scoring for Margiela's Mainline/MM6/Replica ambiguity, Rick Owens
+  mainline-vs-DRKSHDW, and Hedi-era house separation (Dior Homme / Saint
+  Laurent / Celine) -- see its module docstring.
+- **`seed_data.py`**: 43 canonical items.
+- **`pricing.py`**: median/p25 with a minimum sample size, and a
+  suspicious-listing flag (this tier is heavily counterfeited, so an
+  unusually low price defaults to a red flag, not a deal).
+- **`size_normalization.py`**: EU/US/UK/JP size strings (plus "fits like a
+  large") to one canonical number, kept separate for footwear vs. apparel.
+- **`labeled_titles.py`** + **`eval_matcher.py`**: a 67-title hand-labeled
+  corpus and an offline precision/recall/F1 harness for the matcher
+  (`python main.py matcher-eval`).
+- **`alerting.py`**: Discord webhook alerts, deduped via a `sent_alerts`
+  table so the same listing never alerts twice.
+- **CLI** (`main.py`): `seed`, `ingest`, `match` (`--dry-run`), `rematch`,
+  `prices`, `unmatched`, `db-check`, `matcher-eval` (`--sweep`), `alert`
+  (`--dry-run`).
+- **CI** (`.github/workflows/ci.yml`): ruff lint + a Postgres-backed test
+  job on push/PR.
+- **Tests** (`tests/`): pytest, no network required anywhere; one test
+  needs a real Postgres and skips cleanly if none is reachable (CI fails
+  loudly instead of skipping there).
 
 Still no web framework or scheduling -- this is a CLI you run by hand.
-See [WHAT_I_BUILT.md](WHAT_I_BUILT.md) for the detailed, stage-by-stage log
-of what's actually implemented.
 
 Grailed is still just a stub -- see
 [docs/grailed_robots.txt](docs/grailed_robots.txt) (notably:
@@ -125,17 +138,48 @@ Responses are cached on disk under `.cache/` (gitignored) for 15 minutes by
 default, and requests are throttled by a shared rate limiter, so re-running
 the same `ingest` query repeatedly won't hammer eBay.
 
+### Evaluating the matcher offline
+
+```bash
+python main.py matcher-eval                 # precision/recall/F1 at the default threshold
+python main.py matcher-eval --threshold 0.6
+python main.py matcher-eval --sweep         # the same, across a threshold range
+```
+
+Runs the matcher against the hand-labeled corpus in `labeled_titles.py` --
+no database needed. Reports precision/recall/F1 and a list of "confused"
+cases (matched, but to the *wrong* item). See WHAT_I_BUILT.md for what the
+last eval run found and fixed, and for the honest numbers -- this tool is
+meant to give real signal, not a number to chase by lowering the threshold.
+
+### Alerts
+
+```bash
+python main.py alert --dry-run              # print what would be sent, write nothing
+python main.py alert                        # actually post to DISCORD_WEBHOOK_URL
+```
+
+Set `DISCORD_WEBHOOK_URL` in `.env` (a channel's Server Settings ->
+Integrations -> Webhooks). Sends one message per matched listing currently
+classified `deal` or `suspicious` that hasn't already triggered an alert
+(tracked in the `sent_alerts` table, so re-running `alert` never repeats
+itself) -- not required for `--dry-run`, which only prints.
+
 ## Tests
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
+ruff check .
 ```
 
-No network calls required -- eBay responses are mocked, and the
-matcher/pricing tests run against in-memory objects. One test
+No network calls required anywhere -- eBay and Discord are both mocked,
+and the matcher/pricing/size tests run against in-memory objects. One test
 (`tests/test_db_integration.py`) needs a real Postgres to actually run
-(via `docker compose up -d && alembic upgrade head`) and skips cleanly
-otherwise -- it's the only thing that verifies the upsert's `INSERT ...
-ON CONFLICT` against a real database rather than mocked/in-memory
-substitutes.
+(via `docker compose up -d --wait && alembic upgrade head`) and skips
+cleanly otherwise -- it's the only thing that verifies the upsert's
+`INSERT ... ON CONFLICT` against a real database rather than mocked/
+in-memory substitutes. CI (`.github/workflows/ci.yml`) runs both ruff and
+the full suite against a real Postgres service container on every push and
+PR, and fails the build outright if that one test skips instead of
+running.

@@ -263,3 +263,37 @@ the code changes (as opposed to README, which documents how to use it).
   above 0.70, which is real evidence about the current default, not a
   recommendation acted on here -- changing the production threshold is a
   call for the user to make, not something this pass changed unilaterally.
+
+## Alerting
+
+- **`alerting.py`**: `DiscordAlertSender` posts one message per flagged
+  listing to a Discord webhook (`DISCORD_WEBHOOK_URL` in `.env`).
+  `dry_run=True` prints instead of sending -- no network call at all, and
+  doesn't require a webhook URL to be configured. `format_alert_message`
+  builds the message text (classification, price vs. median, title, url).
+- **Dedup lives in the database, not this module**: a new `sent_alerts`
+  table (`listing_id` unique, `classification`, `sent_at`), added via a
+  second Alembic migration (`0002_add_sent_alerts.py`, chained off
+  `0001_initial`; verified with `alembic upgrade head --sql` the same way
+  as the first migration -- both migrations run in sequence and produce
+  the expected DDL). `db/repository.py` gets `has_been_alerted` /
+  `record_alert`; the `alert` CLI command checks the former before
+  sending and calls the latter after (skipped entirely in `--dry-run`, so
+  a dry run never marks anything as sent).
+- **`python main.py alert`** (`--dry-run`, plus the same
+  threshold/floor/seller-rating/photo-count flags `prices` takes): walks
+  every canonical item's matched listings, classifies each the same way
+  `prices` does, and sends (or prints) an alert for anything `deal` or
+  `suspicious` that hasn't already been alerted on. This subcommand
+  wasn't explicitly named in the request but is the natural hookup for
+  the alerting module to actually do something against real data, the
+  same reasoning as adding `seed` earlier.
+- **Tests** (`tests/test_alerting.py`, 10 tests): the webhook is always
+  mocked, including a network-error case (`httpx.ConnectError`) and a
+  non-2xx response, both raising `DiscordAlertError`; dry-run mode is
+  verified to never touch `httpx.Client.post` at all and to not require a
+  webhook URL. Dedup is verified against an in-memory SQLite DB: a fresh
+  listing reads as not-yet-alerted, `record_alert` flips it, and a
+  simulated second `alert` run against the same listing correctly sees it
+  as already-alerted -- the actual scenario the "never alerts twice"
+  requirement is about.

@@ -9,6 +9,7 @@ Subcommands:
     unmatched              list listings the matcher couldn't confidently place
     db-check               print row counts for every table
     matcher-eval            evaluate the matcher against a hand-labeled corpus (offline, no db)
+    alert                   send Discord alerts for flagged listings not already alerted on
 
 Run `python main.py <subcommand> --help` for per-command options.
 """
@@ -21,12 +22,15 @@ from sqlalchemy.exc import OperationalError
 
 import config
 import eval_matcher
+from alerting import DiscordAlertError, DiscordAlertSender, format_alert_message
 from db.models import CanonicalItem, ListingMatch, ListingRecord, UnmatchedListing
 from db.repository import (
     get_canonical_items,
     get_matched_listings_for_canonical_item,
     get_unmatched_listings,
     get_unprocessed_listings,
+    has_been_alerted,
+    record_alert,
     record_match,
     record_unmatched,
     upsert_listing,
@@ -284,6 +288,72 @@ def cmd_matcher_eval(args) -> None:
     _print_eval_result(result)
 
 
+def cmd_alert(args) -> None:
+    session = _get_session_or_exit()
+    canonical_items = get_canonical_items(session)
+    if not canonical_items:
+        print("No canonical items yet -- run `python main.py seed` first.")
+        sys.exit(1)
+
+    try:
+        sender = DiscordAlertSender(dry_run=args.dry_run)
+    except ValueError as exc:
+        print(f"Config error: {exc}")
+        sys.exit(1)
+
+    sent = skipped_already_alerted = skipped_no_data = failed = 0
+
+    for item in canonical_items:
+        listing_records = get_matched_listings_for_canonical_item(session, item.id)
+        stats = compute_price_stats(
+            [lr.price for lr in listing_records], min_sample_size=args.min_sample_size
+        )
+        if stats is None:
+            skipped_no_data += len(listing_records)
+            continue
+
+        for lr in listing_records:
+            classification = classify_listing(
+                lr.price,
+                stats,
+                seller_rating=lr.seller_rating,
+                photo_count=lr.photo_count,
+                floor_pct=args.floor_pct,
+                min_seller_rating=args.min_seller_rating,
+                min_photo_count=args.min_photo_count,
+            )
+            if classification not in ("deal", "suspicious"):
+                continue
+            if has_been_alerted(session, lr.id):
+                skipped_already_alerted += 1
+                continue
+
+            message = format_alert_message(
+                listing_title=lr.title,
+                listing_price=lr.price,
+                listing_url=lr.url,
+                classification=classification,
+                canonical_item_label=_item_label(item),
+                stats=stats,
+            )
+            try:
+                sender.send(message)
+            except DiscordAlertError as exc:
+                print(f"Failed to send alert for listing {lr.id}: {exc}")
+                failed += 1
+                continue
+
+            if not args.dry_run:
+                record_alert(session, lr.id, classification)
+            sent += 1
+
+    verb = "Would send" if args.dry_run else "Sent"
+    print(
+        f"{verb} {sent} alert(s). Skipped {skipped_already_alerted} already-alerted, "
+        f"{skipped_no_data} with insufficient price data. Failed: {failed}."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="resale-tracker CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -352,6 +422,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--sweep-end", type=float, default=0.95, dest="sweep_end")
     p_eval.add_argument("--sweep-step", type=float, default=0.05, dest="sweep_step")
     p_eval.set_defaults(func=cmd_matcher_eval)
+
+    p_alert = sub.add_parser(
+        "alert", help="Send Discord alerts for flagged listings not already alerted on"
+    )
+    p_alert.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print alerts instead of sending them, and don't record them as sent",
+    )
+    p_alert.add_argument(
+        "--min-sample-size", type=int, default=config.MIN_SAMPLE_SIZE, dest="min_sample_size"
+    )
+    p_alert.add_argument(
+        "--floor-pct", type=float, default=config.SUSPICIOUS_FLOOR_PCT, dest="floor_pct"
+    )
+    p_alert.add_argument(
+        "--min-seller-rating",
+        type=float,
+        default=config.MIN_SELLER_RATING,
+        dest="min_seller_rating",
+    )
+    p_alert.add_argument(
+        "--min-photo-count", type=int, default=config.MIN_PHOTO_COUNT, dest="min_photo_count"
+    )
+    p_alert.set_defaults(func=cmd_alert)
 
     return parser
 

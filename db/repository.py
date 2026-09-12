@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from db.models import CanonicalItem, ListingMatch, ListingRecord, UnmatchedListing
+from db.models import CanonicalItem, ListingMatch, ListingRecord, SentAlert, UnmatchedListing
 from sources.base import Listing
 
 
@@ -113,3 +113,21 @@ def get_matched_listings_for_canonical_item(
 def get_unmatched_listings(session: Session) -> list[UnmatchedListing]:
     stmt = select(UnmatchedListing).order_by(UnmatchedListing.created_at.desc())
     return list(session.execute(stmt).scalars())
+
+
+def has_been_alerted(session: Session, listing_id: int) -> bool:
+    """True if this listing has already triggered an alert.
+
+    Callers must check this before sending -- record_alert doesn't guard
+    against being called twice for the same listing (that's the caller's
+    job, same as the rest of this module).
+    """
+    stmt = select(SentAlert.id).where(SentAlert.listing_id == listing_id)
+    return session.execute(stmt).first() is not None
+
+
+def record_alert(session: Session, listing_id: int, classification: str) -> SentAlert:
+    row = SentAlert(listing_id=listing_id, classification=classification)
+    session.add(row)
+    session.commit()
+    return row

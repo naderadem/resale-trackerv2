@@ -122,3 +122,20 @@ class UnmatchedListing(Base):
 
     listing = relationship("ListingRecord", back_populates="unmatched")
     best_candidate = relationship("CanonicalItem")
+
+
+class SentAlert(Base):
+    """Tracks which listings have already triggered an alert, so the same
+    listing never alerts twice across separate `alert` runs.
+    """
+
+    __tablename__ = "sent_alerts"
+
+    id = Column(Integer, primary_key=True)
+    listing_id = Column(
+        Integer, ForeignKey("listings.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    classification = Column(String(20), nullable=False)  # "deal" or "suspicious"
+    sent_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    listing = relationship("ListingRecord")
