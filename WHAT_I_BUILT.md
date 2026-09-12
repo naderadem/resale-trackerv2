@@ -166,3 +166,36 @@ the code changes (as opposed to README, which documents how to use it).
     Verified the clear-then-redo sequence against an in-memory DB.
   - `matcher.MatchResult.best_candidate` (added in the CLI-wiring commit)
     is what makes dry-run's "closest candidate" output possible.
+
+## CI, size normalization, and (in progress) matcher eval tooling
+
+- **`size_normalization.py`**: converts EU/US/UK/JP size strings (plus
+  free text like "fits like a large") to one canonical number, kept
+  completely separate for footwear (canonical: EU shoe-size float) and
+  apparel (canonical: EU tailoring size, or a denim waist in inches --
+  two non-overlapping numeric ranges). Bare numbers are resolved by range
+  where that's unambiguous (EU vs. US/UK shoe ranges don't overlap; EU
+  tailoring vs. denim waist don't either) and flagged `is_estimated` where
+  it isn't (a bare US/UK-band shoe size; any alpha size or "fits like"
+  free text, since those are approximations by nature). A bare US/UK-
+  tagged jacket number is deliberately detected-but-not-converted rather
+  than guessed as a denim waist, since the ranges are close enough to
+  collide. 66 tests, including the ambiguous cases (`"L/XL"`, `"9/9.5"`,
+  `"one size"`, "runs small" fit commentary with no real size given).
+- **CI** (`.github/workflows/ci.yml`): runs on push and PR. A `lint` job
+  runs `ruff check .` (config in `pyproject.toml`; fixed the 6 pre-existing
+  violations -- import ordering and a few `l` ambiguous-variable-name
+  lints in test files -- to get a clean baseline). A `test` job runs
+  against a real Postgres 16 service container (with a healthcheck GitHub
+  Actions waits on before starting the job), runs `alembic upgrade head`
+  against it, then `pytest --junitxml=report.xml`, then
+  `.github/scripts/check_no_skipped_db_test.py` -- which parses the junit
+  XML and fails the job if `tests/test_db_integration.py` shows a
+  `<skipped>` result, since a silent skip there would be a false-negative
+  green build for the one test that verifies the real upsert against a
+  real database. Verified the checker script standalone against this
+  environment's own junit output (which does skip, no Postgres here) and
+  confirmed it exits 1 with the expected error message. **Not yet verified
+  on an actual GitHub Actions runner** -- no way to trigger one from this
+  environment; push this and watch the Actions tab the first time to
+  confirm the service container step and health-wait behave as expected.

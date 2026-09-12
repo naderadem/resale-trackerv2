@@ -1,0 +1,13 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line length is a soft target here, not enforced hard
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sources", "common", "db", "matcher", "pricing", "config", "seed_data", "size_normalization"]
+known-third-party = ["alembic", "sqlalchemy", "httpx", "dotenv", "psycopg2", "rapidfuzz", "pytest"]

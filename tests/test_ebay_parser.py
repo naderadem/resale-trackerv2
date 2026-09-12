@@ -21,7 +21,7 @@ def ebay_source(tmp_path) -> EbaySource:
 
 
 def _by_id(listings, external_id):
-    return next(l for l in listings if l.external_id == external_id)
+    return next(listing for listing in listings if listing.external_id == external_id)
 
 
 class TestParseListings:
@@ -78,7 +78,7 @@ class TestParseListings:
     def test_skips_items_missing_required_fields(self, ebay_source, ebay_search_response):
         listings = ebay_source.parse_listings(ebay_search_response)
         # item 110004 has no "price" key and must be dropped, not raise.
-        ids = [l.external_id for l in listings]
+        ids = [listing.external_id for listing in listings]
         assert "v1|110004|0" not in ids
         assert len(listings) == 4  # 5 items in, 1 skipped
 

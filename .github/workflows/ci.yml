@@ -1,0 +1,50 @@
+name: CI
+
+"on":
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.6.9
+      - run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: resale_tracker
+          POSTGRES_USER: resale_tracker
+          POSTGRES_PASSWORD: resale_tracker
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U resale_tracker"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg2://resale_tracker:resale_tracker@localhost:5432/resale_tracker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt  # pulls in requirements.txt too
+
+      - name: Run Alembic migrations against the Postgres service
+        run: alembic upgrade head
+
+      - name: Run test suite
+        run: pytest -v --junitxml=report.xml
+
+      - name: Fail if the Postgres integration test skipped instead of running
+        run: python .github/scripts/check_no_skipped_db_test.py report.xml

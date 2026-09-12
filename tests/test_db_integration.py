@@ -78,7 +78,10 @@ def test_ingesting_the_same_mocked_response_twice_upserts_not_duplicates(
     try:
         first_listings = _search_with_response(source, cache, ebay_search_response, query)
         assert len(first_listings) == len(external_ids)  # one item has no price and is skipped
-        first_records = {r.external_id: r for r in (upsert_listing(pg_session, l) for l in first_listings)}
+        first_records = {
+            record.external_id: record
+            for record in (upsert_listing(pg_session, listing) for listing in first_listings)
+        }
 
         row_count_after_first = (
             pg_session.query(ListingRecord)
@@ -90,7 +93,10 @@ def test_ingesting_the_same_mocked_response_twice_upserts_not_duplicates(
         # Re-run the identical response through the pipeline again -- as if
         # `ingest` were run a second time for the same query.
         second_listings = _search_with_response(source, cache, ebay_search_response, query)
-        second_records = {r.external_id: r for r in (upsert_listing(pg_session, l) for l in second_listings)}
+        second_records = {
+            record.external_id: record
+            for record in (upsert_listing(pg_session, listing) for listing in second_listings)
+        }
 
         row_count_after_second = (
             pg_session.query(ListingRecord)
