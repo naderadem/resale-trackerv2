@@ -75,3 +75,17 @@ the code changes (as opposed to README, which documents how to use it).
   ambiguous multi-house title), plus general match/no-match/threshold
   behavior. 14 tests, all against in-memory `CanonicalItem` objects -- no
   DB needed.
+- **`pricing.py`**: `compute_price_stats` (median/p25/count via linear
+  interpolation, returns `None` below a configurable minimum sample size --
+  default 5 -- rather than a meaningless median from a handful of
+  listings) and `classify_listing` ("deal" / "suspicious" / "normal" /
+  "no_data"). A price far below median (below a configurable floor
+  percentage, default 40%) is "suspicious" regardless of trust signals;
+  a moderately-below-median price is only a "deal" when seller rating
+  *and* photo count both clear configurable bars, otherwise it's still
+  "suspicious" -- this tier is heavily counterfeited, so an unusually low
+  price defaults to a red flag, not a bargain.
+- Tests (`tests/test_pricing.py`): the minimum-sample-size cutoff (below,
+  at, and using the default), median/p25 correctness on sorted/unsorted
+  input, and every classify_listing branch (floor override, good vs. poor
+  seller rating, missing signals, configurable floor_pct).
