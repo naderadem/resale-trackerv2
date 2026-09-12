@@ -84,22 +84,29 @@ def _is_rick_owens(item) -> bool:
     return (item.brand or "").strip().lower() == "rick owens"
 
 
+# line_or_era values that are pure internal categorization, not something
+# a real seller ever types -- excluded from the *scored* text below. Values
+# NOT in this set (MM6, Replica, DRKSHDW) are real words sellers commonly
+# do include in a title, and are kept: they're useful signal, not noise.
+_NON_VERBAL_LINE_LABELS = {"Mainline", "Hedi Slimane Era"}
+
+
 def _searchable_text(item) -> str:
-    # Deliberately excludes line_or_era. It's already used for candidate-
-    # pool narrowing above (the Margiela/Rick Owens hints, and brand-level
-    # narrowing for the Hedi-era houses) -- by the time we score, the
-    # narrowing has already done the disambiguation work. Including a
-    # multi-word era label like "Hedi Slimane Era" in the *scored* text
-    # only adds tokens a real listing title essentially never contains
-    # verbatim, which token_set_ratio penalizes (extra tokens on the
-    # candidate side, unlike extra tokens on the title side, do cost
-    # score) -- systematically depressing every Dior Homme/Saint Laurent
-    # match for no disambiguation benefit. Found via eval_matcher.py: this
-    # alone moved F1 from 0.827 to 0.872 at threshold 0.70 on the labeled
-    # corpus, with no false-positive regressions on the disambiguation
-    # tests -- narrowing, not text overlap, is what keeps lines/houses
-    # apart.
-    return " ".join(filter(None, [item.brand, item.model_name]))
+    # line_or_era is already used for candidate-pool narrowing above (the
+    # Margiela/Rick Owens hints, and brand-level narrowing for the
+    # Hedi-era houses) -- by the time we score, narrowing has already done
+    # the disambiguation work, so the *scored* text doesn't need it to
+    # disambiguate. But some line labels ARE real words sellers write
+    # ("MM6", "Replica", "DRKSHDW") and help the score; only labels no one
+    # actually types (a multi-word era qualifier like "Hedi Slimane Era",
+    # or "Mainline" -- nobody clarifies a listing isn't MM6) get dropped.
+    # Found via eval_matcher.py in two passes: dropping ALL line_or_era
+    # first fixed the Hedi-era case but broke MM6/Replica/DRKSHDW matches
+    # the same way; narrowing to just the non-verbal labels got both:
+    # F1 0.795 -> 0.857 -> 0.900 at threshold 0.72 on the labeled corpus,
+    # with no false-positive regressions on the disambiguation tests.
+    line = item.line_or_era if item.line_or_era not in _NON_VERBAL_LINE_LABELS else None
+    return " ".join(filter(None, [item.brand, line, item.model_name]))
 
 
 def _margiela_line_hint(title: str) -> Optional[str]:
