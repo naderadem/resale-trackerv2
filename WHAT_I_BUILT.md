@@ -48,3 +48,30 @@ the code changes (as opposed to README, which documents how to use it).
   changes can go back to the normal autogenerate flow against a live db.
 - **`docker-compose.yml`**: local Postgres 16, env-driven, matching
   `.env.example` defaults, with a healthcheck.
+- **`matcher.py`**: rapidfuzz (`token_set_ratio` -- more forgiving than
+  `WRatio` of the noise words real titles carry that a canonical item's
+  short name doesn't) matching of a title against `canonical_items`,
+  returning the best match + confidence or `None` (with a `reason`) below a
+  configurable threshold (default 0.72). Two keyword-regex guards run
+  *before* fuzzy scoring:
+  - *Margiela line disambiguation*: Mainline/MM6/Replica narrowed by brand
+    + line keywords in the title before scoring, so shared model names
+    (e.g. "Tabi" exists in more than one line) can't cross-match. A bare
+    "replica" mention with no Margiela brand token (e.g. "Rick Owens
+    Geobasket replica") is refused outright rather than fuzzy-matched to
+    the genuine item it's imitating -- same for other counterfeit language
+    ("reps", "1:1", "AAA", etc.) wherever it appears.
+  - *Hedi-era house separation*: candidates narrowed to the one house
+    (Dior Homme / Saint Laurent / Celine) named in the title, if exactly
+    one is; ambiguous titles naming more than one house fall through to
+    unrestricted scoring rather than guessing.
+- **`seed_data.py`**: 15 canonical items -- 4 Rick Owens, 3 Hedi-era Dior
+  Homme, 3 Hedi-era Saint Laurent, 2 Margiela Mainline + 1 MM6 + 1 Replica,
+  1 Carol Christian Poell. `seed_canonical_items(session)` inserts anything
+  not already present (by brand+line+model), so it's safe to re-run.
+- Tests (`tests/test_matcher.py`): the Margiela mainline/MM6/Replica
+  disambiguation, the bare-"replica"-is-refused case and other counterfeit
+  language, Dior Homme/Saint Laurent/Celine separation (including an
+  ambiguous multi-house title), plus general match/no-match/threshold
+  behavior. 14 tests, all against in-memory `CanonicalItem` objects -- no
+  DB needed.
