@@ -15,7 +15,7 @@ the code changes (as opposed to README, which documents how to use it).
   and on-disk JSON response cache, used by `EbaySource` from the start.
 - `main.py`: single-shot CLI (`python main.py "<query>"`).
 
-## Stage 2 (in progress)
+## Stage 2
 
 - **`sources/ebay.py`: `parse_listings` implemented.** Brand/size resolution
   order: `localizedAspects` (structured data eBay sometimes returns for
@@ -89,3 +89,32 @@ the code changes (as opposed to README, which documents how to use it).
   at, and using the default), median/p25 correctness on sorted/unsorted
   input, and every classify_listing branch (floor override, good vs. poor
   seller rating, missing signals, configurable floor_pct).
+- **CLI** (`main.py`, `config.py`): subcommands `ingest <query>`, `match`,
+  `prices`, `unmatched` as specified, plus one addition beyond the spec --
+  **`seed`**, since seed data needs some way to actually reach the
+  database; it wraps `seed_data.seed_canonical_items` and is idempotent.
+  `config.py` reads matcher/pricing thresholds from `.env` with defaults
+  matching `matcher.py`/`pricing.py`; every subcommand that uses them also
+  takes a CLI flag override (`--threshold`, `--min-sample-size`,
+  `--floor-pct`, `--min-seller-rating`, `--min-photo-count`). All DB-backed
+  commands fail with a friendly "is Postgres running?" hint instead of a
+  raw traceback when the connection fails.
+  `match` also records the matcher's *near-miss* candidate
+  (`best_candidate`) on unmatched rows, not just the fact that nothing
+  cleared the threshold -- useful when reviewing `unmatched` to see what
+  the matcher was close to guessing.
+
+  **Verification**: `db/repository.py`'s query functions (everything
+  except the Postgres-specific `upsert_listing`, which uses `INSERT ...
+  ON CONFLICT`) were exercised end-to-end against a real, if temporary,
+  database -- SQLite in-memory standing in for Postgres, since none was
+  available in this environment. Seeded 15 canonical items, ran 7 listings
+  (5 genuine Geobasket titles in different phrasings, one bare-"replica"
+  counterfeit mention, one unrelated Nike title) through `match_listing` +
+  `record_match`/`record_unmatched`, confirmed `get_unprocessed_listings`
+  goes to empty afterward (the idempotency `match` relies on), computed
+  price stats over the 5 matched listings, and classified each by seller
+  rating/photo count -- all matched expectations. `upsert_listing` and the
+  real `ingest` round trip (which also needs a real Postgres) are the one
+  piece not exercised here; run `docker compose up -d && alembic upgrade
+  head` yourself and try `ingest`/`match`/`prices` for real.

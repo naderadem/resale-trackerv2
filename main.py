@@ -1,29 +1,67 @@
-"""Stage 1 CLI: run a single search against a source and print results.
+"""resale-tracker CLI.
 
-Usage:
-    python main.py "rick owens geobasket"
+Subcommands:
+    seed                 populate canonical_items with seed data (idempotent)
+    ingest <query>        search eBay and upsert results into listings
+    match                 match unprocessed listings against canonical_items
+    prices                show price stats + flagged listings per canonical item
+    unmatched              list listings the matcher couldn't confidently place
 
-Currently only the eBay adapter is wired up here. Since parse_listings()
-in sources/ebay.py isn't implemented yet, this will authenticate, hit the
-Browse API, print one sample raw listing as JSON, and then stop with a
-NotImplementedError -- that's expected until you implement parse_listings.
+Run `python main.py <subcommand> --help` for per-command options.
 """
+import argparse
 import sys
 
 from dotenv import load_dotenv
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
+import config
+from db.repository import (
+    get_canonical_items,
+    get_matched_listings_for_canonical_item,
+    get_unmatched_listings,
+    get_unprocessed_listings,
+    record_match,
+    record_unmatched,
+    upsert_listing,
+)
+from db.session import get_session
+from matcher import match_listing
+from pricing import classify_listing, compute_price_stats
+from seed_data import CANONICAL_ITEMS, seed_canonical_items
 from sources.ebay import EbayAuthError, EbaySearchError, EbaySource
 
 
-def main() -> None:
-    load_dotenv()
-
-    if len(sys.argv) < 2:
-        print('Usage: python main.py "<search query>"')
+def _get_session_or_exit():
+    """Open a DB session, failing with a friendly hint rather than a traceback."""
+    session = get_session()
+    try:
+        session.execute(text("SELECT 1"))
+    except OperationalError as exc:
+        print("Could not connect to Postgres. Is it running?")
+        print("  Try: docker compose up -d   (then: alembic upgrade head)")
+        print(f"  ({exc})")
         sys.exit(1)
+    return session
 
-    query = " ".join(sys.argv[1:])
 
+def _item_label(item) -> str:
+    parts = [item.brand]
+    if item.line_or_era:
+        parts.append(item.line_or_era)
+    parts.append(item.model_name)
+    return " ".join(parts)
+
+
+def cmd_seed(args) -> None:
+    session = _get_session_or_exit()
+    inserted = seed_canonical_items(session)
+    already_present = len(CANONICAL_ITEMS) - inserted
+    print(f"Seeded {inserted} new canonical item(s), {already_present} already present.")
+
+
+def cmd_ingest(args) -> None:
     try:
         source = EbaySource()
     except ValueError as exc:
@@ -31,19 +69,158 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        listings = source.search(query)
-    except NotImplementedError:
-        print(
-            "\nsearch() reached parse_listings(), which isn't implemented yet.\n"
-            "See the sample raw listing printed above and sources/ebay.py."
-        )
-        return
+        listings = source.search(args.query)
     except (EbayAuthError, EbaySearchError) as exc:
         print(f"eBay request failed: {exc}")
         sys.exit(1)
 
+    session = _get_session_or_exit()
     for listing in listings:
-        print(listing)
+        upsert_listing(session, listing)
+
+    print(f"Ingested {len(listings)} listing(s) for query {args.query!r}.")
+
+
+def cmd_match(args) -> None:
+    session = _get_session_or_exit()
+    canonical_items = get_canonical_items(session)
+    if not canonical_items:
+        print("No canonical items yet -- run `python main.py seed` first.")
+        sys.exit(1)
+
+    listings = get_unprocessed_listings(session)
+    if not listings:
+        print("No unprocessed listings to match. Run `python main.py ingest <query>` first.")
+        return
+
+    matched_count = 0
+    unmatched_count = 0
+    for listing in listings:
+        result = match_listing(listing.title, canonical_items, threshold=args.threshold)
+        if result.canonical_item is not None:
+            record_match(
+                session, listing.id, result.canonical_item.id, result.confidence, result.method
+            )
+            matched_count += 1
+        else:
+            best_score = result.confidence if result.method == "rapidfuzz" else None
+            best_candidate_id = result.best_candidate.id if result.best_candidate else None
+            record_unmatched(
+                session,
+                listing.id,
+                listing.title,
+                best_score=best_score,
+                best_candidate_id=best_candidate_id,
+                reason=result.reason,
+            )
+            unmatched_count += 1
+
+    print(f"Matched {matched_count}, unmatched {unmatched_count} (of {len(listings)} processed).")
+
+
+def cmd_prices(args) -> None:
+    session = _get_session_or_exit()
+    canonical_items = get_canonical_items(session)
+    if not canonical_items:
+        print("No canonical items yet -- run `python main.py seed` first.")
+        sys.exit(1)
+
+    for item in canonical_items:
+        listing_records = get_matched_listings_for_canonical_item(session, item.id)
+        stats = compute_price_stats(
+            [lr.price for lr in listing_records], min_sample_size=args.min_sample_size
+        )
+
+        if stats is None:
+            print(
+                f"{_item_label(item)}: insufficient data "
+                f"(n={len(listing_records)}, need >= {args.min_sample_size})"
+            )
+            continue
+
+        print(
+            f"{_item_label(item)}: median=${stats.median:.2f} "
+            f"p25=${stats.p25:.2f} n={stats.count}"
+        )
+        for lr in listing_records:
+            classification = classify_listing(
+                lr.price,
+                stats,
+                seller_rating=lr.seller_rating,
+                photo_count=lr.photo_count,
+                floor_pct=args.floor_pct,
+                min_seller_rating=args.min_seller_rating,
+                min_photo_count=args.min_photo_count,
+            )
+            if classification in ("deal", "suspicious"):
+                print(f"    [{classification.upper()}] ${lr.price:.2f} - {lr.title} ({lr.url})")
+
+
+def cmd_unmatched(args) -> None:
+    session = _get_session_or_exit()
+    rows = get_unmatched_listings(session)
+    if not rows:
+        print("No unmatched listings.")
+        return
+
+    for row in rows:
+        listing = row.listing
+        near_miss = f" near_miss={_item_label(row.best_candidate)}" if row.best_candidate else ""
+        print(
+            f"#{row.id} reason={row.reason} best_score={row.best_score}{near_miss}\n"
+            f"    title={row.raw_title!r}\n"
+            f"    price=${listing.price:.2f} url={listing.url}"
+        )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="resale-tracker CLI")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_seed = sub.add_parser("seed", help="Populate canonical_items with seed data")
+    p_seed.set_defaults(func=cmd_seed)
+
+    p_ingest = sub.add_parser("ingest", help="Search eBay and upsert results into listings")
+    p_ingest.add_argument("query", help="Search query, e.g. \"rick owens geobasket\"")
+    p_ingest.set_defaults(func=cmd_ingest)
+
+    p_match = sub.add_parser("match", help="Match unprocessed listings against canonical_items")
+    p_match.add_argument("--threshold", type=float, default=config.MATCH_THRESHOLD)
+    p_match.set_defaults(func=cmd_match)
+
+    p_prices = sub.add_parser(
+        "prices", help="Show price stats and flagged listings per canonical item"
+    )
+    p_prices.add_argument(
+        "--min-sample-size", type=int, default=config.MIN_SAMPLE_SIZE, dest="min_sample_size"
+    )
+    p_prices.add_argument(
+        "--floor-pct", type=float, default=config.SUSPICIOUS_FLOOR_PCT, dest="floor_pct"
+    )
+    p_prices.add_argument(
+        "--min-seller-rating",
+        type=float,
+        default=config.MIN_SELLER_RATING,
+        dest="min_seller_rating",
+    )
+    p_prices.add_argument(
+        "--min-photo-count", type=int, default=config.MIN_PHOTO_COUNT, dest="min_photo_count"
+    )
+    p_prices.set_defaults(func=cmd_prices)
+
+    p_unmatched = sub.add_parser(
+        "unmatched", help="List listings the matcher couldn't confidently place"
+    )
+    p_unmatched.set_defaults(func=cmd_unmatched)
+
+    return parser
+
+
+def main() -> None:
+    load_dotenv()
+    parser = build_parser()
+    args = parser.parse_args()
+    args.func(args)
 
 
 if __name__ == "__main__":

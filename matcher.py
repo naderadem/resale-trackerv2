@@ -58,6 +58,11 @@ class MatchResult:
     confidence: float  # 0.0-1.0
     method: str  # "rapidfuzz", or "blocked" when refused before scoring
     reason: Optional[str] = None  # populated whenever canonical_item is None
+    best_candidate: Optional[object] = None
+    """The top-scoring candidate even when it didn't clear the threshold
+    (None when scoring never ran at all, e.g. a "blocked" result) -- kept
+    so a human reviewing unmatched_listings can see what the matcher was
+    closest to guessing, not just that it gave up."""
 
 
 def _is_margiela(item) -> bool:
@@ -150,7 +155,14 @@ def match_listing(
 
     _, score, idx = best
     confidence = score / 100.0
+    top_candidate = candidates[idx]
     if confidence < threshold:
-        return MatchResult(None, confidence, "rapidfuzz", reason="below_threshold")
+        return MatchResult(
+            None,
+            confidence,
+            "rapidfuzz",
+            reason="below_threshold",
+            best_candidate=top_candidate,
+        )
 
-    return MatchResult(candidates[idx], confidence, "rapidfuzz")
+    return MatchResult(top_candidate, confidence, "rapidfuzz", best_candidate=top_candidate)
